@@ -1,12 +1,12 @@
 #![feature(type_alias_impl_trait)]
 
 use edge_executor::{Local, Task};
-use embassy_futures::select::{select, Either};
+
 use esp_idf_sys as _; // If using the `binstart` feature of `esp-idf-sys`, always keep this module imported
 use esp_idf_sys::EspError;
 
 use crate::errors::*;
-use channel_bridge::{asynch::pubsub, asynch::*, notification::Notification};
+use channel_bridge::{asynch::pubsub, asynch::*};
 use edge_executor::*;
 use embedded_svc::utils::asyncify::Asyncify;
 use embedded_svc::wifi::{AuthMethod, ClientConfiguration, Configuration, Wifi as WifiTrait};
@@ -35,12 +35,9 @@ fn main() -> anyhow::Result<()> {
     esp_idf_hal::task::critical_section::link();
     esp_idf_svc::timer::embassy_time::driver::link();
     esp_idf_svc::timer::embassy_time::queue::link();
-    // Temporary. Will disappear once ESP-IDF 4.4 is released, but for now it is necessary to call this function once,
-    // or else some patches to the runtime implemented by esp-idf-sys might not link properly.
-    //esp_idf_sys::link_patches();
 
     esp_idf_svc::log::EspLogger::initialize_default();
-    info!("Hello, world!");
+    info!("Minimal asynch IDF wifi example");
 
     info!("Wifi name {}", SSID);
 
@@ -55,7 +52,7 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     ThreadSpawnConfiguration {
-        name: Some(b"async-exec-mid\0"),
+        name: Some(b"wifi-async-executor\0"),
         priority: TASK_ID_PRIORITY,
         ..Default::default()
     }
@@ -140,15 +137,15 @@ pub async fn process_wifi_state_change(
     mut state_changed_source: impl Receiver<Data = WifiEvent>,
 ) {
     loop {
-        let event = state_changed_source.recv().await;
-        let event = event.unwrap();
+        let event = state_changed_source.recv().await.unwrap();
+
         match event {
             WifiEvent::StaConnected => {
                 info!("WifiEvent: STAConnected");
             }
             WifiEvent::StaDisconnected => {
                 info!("WifiEvent: STADisconnected");
-                wifi.connect();
+                let _ = wifi.connect();
             }
             _ => {
                 info!("WifiEvent: other .....");
@@ -159,8 +156,7 @@ pub async fn process_wifi_state_change(
 
 pub async fn process_netif_state_change(mut state_changed_source: impl Receiver<Data = IpEvent>) {
     loop {
-        let event = state_changed_source.recv().await;
-        let event = event.unwrap();
+        let event = state_changed_source.recv().await.unwrap();
 
         match event {
             IpEvent::DhcpIpAssigned(assignment) => {
