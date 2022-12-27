@@ -1,5 +1,3 @@
-#![feature(type_alias_impl_trait)]
-
 use crate::errors::*;
 use crate::lazy_http_server::lazy_init_http_server::LazyInitHttpServer;
 use channel_bridge::{asynch::pubsub, asynch::*};
@@ -32,7 +30,7 @@ sys::esp_app_desc!();
 const SSID: &str = env!("RUST_ESP32_ANEMOMETER_WIFI_SSID");
 const PASS: &str = env!("RUST_ESP32_ANEMOMETER_WIFI_PASS");
 
-const TASK_ID_PRIORITY: u8 = 30;
+const TASK_PRIORITY: u8 = 30;
 static CHANNEL: PubSubChannel<CriticalSectionRawMutex, [u8; 8], 4, 4, 4> = PubSubChannel::new();
 static NETWORK_EVENT_CHANNEL: PubSubChannel<CriticalSectionRawMutex, NetworkStateChange, 4, 4, 4> =
     PubSubChannel::new();
@@ -81,7 +79,7 @@ fn main() -> anyhow::Result<()> {
 
     ThreadSpawnConfiguration {
         name: Some(b"wifi-async-executor\0"),
-        priority: TASK_ID_PRIORITY,
+        priority: TASK_PRIORITY,
         ..Default::default()
     }
     .set()?;
@@ -241,7 +239,8 @@ async fn channel_subscriber2_task() {
 }
 
 async fn http_server_task() {
-    use embedded_svc::{io::Write, utils::http::Headers};
+    use embedded_svc::io::blocking::Write;
+    use embedded_svc::utils::http::Headers;
     use esp_idf_svc::http::server::Configuration;
 
     const FIRMWARE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -263,7 +262,8 @@ async fn http_server_task() {
 
                     let mut resp = req.into_response(200, None, headers.as_slice())?;
                     resp.write_all(FIRMWARE_VERSION.as_bytes())?;
-                    info!("Processing '/api/version' request");
+
+                    info!("Processing '/' request");
                     Ok(())
                 }) {
                     info!(
