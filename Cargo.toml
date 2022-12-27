@@ -19,7 +19,7 @@ pio = ["esp-idf-sys/pio"]
 embedded-hal = { git = "https://github.com/rust-embedded/embedded-hal", tag = "v1.0.0-alpha.9" }
 embedded-svc = { version = "0.24", features = ["nightly", "experimental"] }
 esp-idf-sys = { version = "0.32.1", features = ["binstart"] }
-esp-idf-svc = { git = "https://github.com/taunusflieger/esp-idf-svc", features = [
+esp-idf-svc = { git = "https://github.com/taunusflieger/esp-idf-svc", branch = "idf5_fixes", features = [
     "nightly",
     "experimental",
     "embassy-time-isr-queue",
@@ -45,6 +45,7 @@ embassy-futures = { version = "0.1" }
 embassy-sync = { version = "0.1", features = ["std"] }
 embassy-time = { version = "0.1" }
 static_cell = { version = "1" }
+once_cell = { version = "1.16.0" }
 anyhow = "1.0"
 
 [build-dependencies]
