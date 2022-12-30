@@ -47,6 +47,11 @@ embassy-time = { version = "0.1" }
 static_cell = { version = "1" }
 once_cell = { version = "1.16.0" }
 anyhow = "1.0"
+serde = { version = "1", default-features = false }
+postcard = "1.0.2"
+
+[package.metadata.espflash]
+partition_table = "partitions.csv"
 
 [build-dependencies]
 embuild = "0.30.4"
