@@ -1,8 +1,8 @@
 use crate::errors::*;
 use crate::services::*;
 use crate::state::*;
-use crate::task::httpd::*;
-use crate::task::mqtt;
+use crate::task::{httpd::*, mqtt, ota::*};
+
 use channel_bridge::{asynch::pubsub, asynch::*};
 use edge_executor::*;
 use edge_executor::{Local, Task};
@@ -91,6 +91,8 @@ fn main() -> Result<(), InitError> {
     let low_prio_execution = schedule::<8, _>(50000, move || {
         let executor = EspExecutor::new();
         let mut tasks = heapless::Vec::new();
+
+        executor.spawn_local_collect(ota_task(), &mut tasks)?;
 
         executor.spawn_local_collect(
             mqtt::send_task::<MQTT_MAX_TOPIC_LEN>(mqtt_topic_prefix, mqtt_client),
@@ -181,12 +183,12 @@ pub async fn process_netif_state_change(mut state_changed_source: impl Receiver<
 
 async fn wind_speed_demo_publisher_task() {
     loop {
-        let mut publisher = APPLICATION_EVENT_CHANNEL.publisher().unwrap();
+        let publisher = APPLICATION_EVENT_CHANNEL.publisher().unwrap();
         let data = ApplicationStateChange::NewWindData(WindData {
             speed: 23,
             angle: 180,
         });
-        let _ = publisher.send(data).await;
+        let _ = publisher.publish(data).await;
         Timer::after(Duration::from_secs(10)).await;
     }
 }

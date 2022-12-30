@@ -1,9 +1,15 @@
+use crate::state::OtaUrl;
 use core::str;
 use embedded_svc::mqtt::client::asynch::{Event, Message};
 use embedded_svc::mqtt::client::Details;
+use log::*;
 use serde::{Deserialize, Serialize};
 
-type OtaUrl = heapless::String<128>;
+pub const MQTT_TOPIC_POSTFIX_COMMAND: &str = "/command/#";
+pub const MQTT_TOPIC_POSTFIX_COMMAND_OTA_UPDATE: &str = "/command/ota_update";
+pub const MQTT_TOPIC_POSTFIX_COMMAND_SYSTEM_RESTART: &str = "/command/system_restart";
+pub const MQTT_TOPIC_POSTFIX_WIND_SPEED: &str = "/wind/speed";
+pub const MQTT_TOPIC_POSTFIX_WIND_DIRECTION: &str = "/wind/direction";
 
 #[derive(Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
 pub enum MqttCommand {
@@ -11,15 +17,18 @@ pub enum MqttCommand {
     SystemRestart,
 }
 
-#[derive(Default)]
 pub struct MessageParser {
     #[allow(clippy::type_complexity)]
     command_parser: Option<fn(&[u8]) -> Option<MqttCommand>>,
-    payload_buf: [u8; 16],
+    payload_buf: [u8; 128],
 }
+
 impl MessageParser {
     pub fn new() -> Self {
-        Default::default()
+        MessageParser {
+            command_parser: None,
+            payload_buf: [0; 128],
+        }
     }
 
     pub fn convert<M, E>(
@@ -40,6 +49,7 @@ impl MessageParser {
     where
         M: Message,
     {
+        info!("Message = {:?}", message.details());
         match message.details() {
             Details::Complete => Self::parse_command(message.topic().unwrap())
                 .and_then(|parser| parser(message.data())),
@@ -75,11 +85,12 @@ impl MessageParser {
         }
     }
 
-    #[allow(clippy::type_complexity)]
+    //#[allow(clippy::type_complexity)]
     fn parse_command(topic: &str) -> Option<fn(&[u8]) -> Option<MqttCommand>> {
-        if topic.ends_with("/commands/ota_update") {
+        info!("parse_command: {}", topic);
+        if topic.ends_with(MQTT_TOPIC_POSTFIX_COMMAND_OTA_UPDATE) {
             Some(Self::parse_ota_update_command)
-        } else if topic.ends_with("/commands/system_restart") {
+        } else if topic.ends_with(MQTT_TOPIC_POSTFIX_COMMAND_SYSTEM_RESTART) {
             Some(Self::parse_system_restart_command)
         } else {
             None

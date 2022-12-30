@@ -1,12 +1,14 @@
 use crate::error;
-use crate::mqtt_msg::MqttCommand;
+use crate::mqtt_msg::{
+    MqttCommand, MQTT_TOPIC_POSTFIX_COMMAND, MQTT_TOPIC_POSTFIX_WIND_DIRECTION,
+    MQTT_TOPIC_POSTFIX_WIND_SPEED,
+};
 use crate::state::*;
 use core::str::{self, FromStr};
 use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embedded_svc::mqtt::client::asynch::{Client, Connection, Event, Publish, QoS};
-
 use log::*;
 
 static MQTT_CONNECT_SIGNAL: Signal<CriticalSectionRawMutex, bool> = Signal::new();
@@ -22,6 +24,9 @@ pub async fn receive_task(mut connection: impl Connection<Message = Option<MqttC
                 match cmd {
                     MqttCommand::ExecOTAUpdate(url) => {
                         info!("MQTT received OTA update request. url = {}", url);
+                        let publisher = APPLICATION_EVENT_CHANNEL.publisher().unwrap();
+                        let data = ApplicationStateChange::OTAUpdateRequest(url.clone());
+                        let _ = publisher.publish(data).await;
                     }
                     MqttCommand::SystemRestart => {
                         info!("MQTT received system restart request");
@@ -51,19 +56,19 @@ pub async fn send_task<const L: usize>(topic_prefix: &str, mut mqtt: impl Client
     let topic = |topic_suffix| {
         heapless::String::<L>::from_str(topic_prefix)
             .and_then(|mut s| s.push_str(topic_suffix).map(|_| s))
-            .unwrap_or_else(|_| panic!(""))
+            .unwrap_or_else(|_| panic!("failed to construct topic"))
     };
 
-    let topic_commands = topic("/commands/#");
-
-    let topic_wind_speed = topic("/wind/speed");
+    let topic_commands = topic(MQTT_TOPIC_POSTFIX_COMMAND);
+    let topic_wind_speed = topic(MQTT_TOPIC_POSTFIX_WIND_SPEED);
     #[allow(unused)]
-    let topic_wind_angle = topic("/wind/angle");
-    let mut subscriber = APPLICATION_EVENT_CHANNEL.subscriber().unwrap();
+    let topic_wind_angle = topic(MQTT_TOPIC_POSTFIX_WIND_DIRECTION);
+
+    let mut app_event = APPLICATION_EVENT_CHANNEL.subscriber().unwrap();
 
     loop {
         let (conn_state, app_state_change) =
-            match select(MQTT_CONNECT_SIGNAL.wait(), subscriber.next_message_pure()).await {
+            match select(MQTT_CONNECT_SIGNAL.wait(), app_event.next_message_pure()).await {
                 Either::First(conn_state) => {
                     info!("MQTT::send recv MQTT_CONNECT_SIGNAL");
                     (Some(conn_state), None)
@@ -89,6 +94,7 @@ pub async fn send_task<const L: usize>(topic_prefix: &str, mut mqtt: impl Client
                 connected = false;
             }
         }
+
         if let Some(ApplicationStateChange::NewWindData(wind_data)) = app_state_change {
             info!("mqtt::send new wind data {}", wind_data.speed);
 

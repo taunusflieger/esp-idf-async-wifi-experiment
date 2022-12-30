@@ -2,6 +2,8 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::pubsub::PubSubChannel;
 use serde::{Deserialize, Serialize};
 
+pub type OtaUrl = heapless::String<128>;
+
 pub static NETWORK_EVENT_CHANNEL: PubSubChannel<
     CriticalSectionRawMutex,
     NetworkStateChange,
@@ -31,10 +33,10 @@ pub struct WindData {
     pub angle: u16,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub enum ApplicationStateChange {
-    OTAUpdateRequest,
+    OTAUpdateRequest(OtaUrl),
     OTAUpdateStarted,
     NewWindData(WindData),
 }

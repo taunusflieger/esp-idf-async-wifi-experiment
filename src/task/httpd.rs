@@ -1,5 +1,6 @@
 use crate::services::http::*;
 use crate::state::*;
+use embassy_futures::select::{select, Either};
 use log::*;
 
 pub async fn http_server_task() {
@@ -10,13 +11,39 @@ pub async fn http_server_task() {
 
     const FIRMWARE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-    let httpd = LazyInitHttpServer::new();
-    loop {
-        let mut subscriber = NETWORK_EVENT_CHANNEL.subscriber().unwrap();
-        let event = subscriber.next_message_pure().await;
+    let mut network_event = NETWORK_EVENT_CHANNEL.subscriber().unwrap();
+    let mut app_event = APPLICATION_EVENT_CHANNEL.subscriber().unwrap();
 
-        match event {
-            NetworkStateChange::IpAddressAssigned { ip } => {
+    let httpd = LazyInitHttpServer::new();
+
+    loop {
+        // We are interested in network events (wifi disconnected or
+        // IP address assigned), or OTA update started. On all of
+        // those events we need to react.
+        let (network_state, app_state) = match select(
+            network_event.next_message_pure(),
+            app_event.next_message_pure(),
+        )
+        .await
+        {
+            Either::First(network_state) => {
+                info!("network change event received");
+                (Some(network_state), None)
+            }
+            Either::Second(app_state) => {
+                info!("app state change event received");
+                (None, Some(app_state))
+            }
+        };
+
+        if let Some(ApplicationStateChange::OTAUpdateStarted) = app_state {
+            info!("OTA Update started shutting down http server");
+            httpd.clear();
+            break;
+        }
+
+        match network_state {
+            Some(NetworkStateChange::IpAddressAssigned { ip }) => {
                 let conf = Configuration::default();
                 let mut s = httpd.create(&conf);
 
@@ -40,10 +67,12 @@ pub async fn http_server_task() {
                     }
                 }
             }
-            NetworkStateChange::WifiDisconnected => {
+            Some(NetworkStateChange::WifiDisconnected) => {
                 info!("http_server_task: stopping httpd");
                 httpd.clear();
             }
+            None => {}
         }
     }
+    info!("http_server_task shutdown");
 }
