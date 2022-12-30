@@ -1,6 +1,5 @@
 use channel_bridge::{asynch::pubsub, asynch::*};
-use embedded_svc::mqtt::client::asynch::{Client, Connection, Event, Message, Publish, QoS};
-use embedded_svc::mqtt::client::Details;
+use embedded_svc::mqtt::client::asynch::{Client, Connection, Publish};
 use embedded_svc::utils::asyncify::Asyncify;
 use embedded_svc::wifi::{AuthMethod, ClientConfiguration, Configuration, Wifi as WifiTrait};
 use esp_idf_hal::modem::WifiModemPeripheral;
@@ -13,7 +12,7 @@ use esp_idf_sys::EspError;
 use log::*;
 
 use crate::errors::*;
-use crate::mqtt::*;
+use crate::mqtt_msg::*;
 
 const SSID: &str = env!("RUST_ESP32_ANEMOMETER_WIFI_SSID");
 const PASS: &str = env!("RUST_ESP32_ANEMOMETER_WIFI_PASS");

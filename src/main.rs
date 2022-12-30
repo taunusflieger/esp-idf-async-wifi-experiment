@@ -2,6 +2,7 @@ use crate::errors::*;
 use crate::services::*;
 use crate::state::*;
 use crate::task::httpd::*;
+use crate::task::mqtt;
 use channel_bridge::{asynch::pubsub, asynch::*};
 use edge_executor::*;
 use edge_executor::{Local, Task};
@@ -22,7 +23,7 @@ use log::*;
 
 mod error;
 mod errors;
-mod mqtt;
+mod mqtt_msg;
 mod services;
 mod state;
 mod task;
@@ -48,7 +49,7 @@ fn main() -> Result<(), InitError> {
     let (wifi, wifi_notif) = wifi(
         peripherals.modem,
         sysloop.clone(),
-        Some(nvs_default_partition.clone()),
+        Some(nvs_default_partition),
     )?;
 
     let (mqtt_topic_prefix, mqtt_client, mqtt_conn) = services::mqtt()?;
@@ -70,10 +71,12 @@ fn main() -> Result<(), InitError> {
 
         executor.spawn_local_collect(http_server_task(), &mut tasks)?;
 
-        executor.spawn_local_collect(mqtt::receive(mqtt_conn), &mut tasks)?;
+        executor.spawn_local_collect(mqtt::receive_task(mqtt_conn), &mut tasks)?;
 
-        let netif_notif = netif_notifier(sysloop.clone()).unwrap(); // TODO: error conversion
-        executor.spawn_local_collect(process_netif_state_change(netif_notif), &mut tasks)?;
+        executor.spawn_local_collect(
+            process_netif_state_change(netif_notifier(sysloop.clone()).unwrap()),
+            &mut tasks,
+        )?;
 
         Ok((executor, tasks))
     });
@@ -90,13 +93,14 @@ fn main() -> Result<(), InitError> {
         let mut tasks = heapless::Vec::new();
 
         executor.spawn_local_collect(
-            mqtt::send::<MQTT_MAX_TOPIC_LEN>(mqtt_topic_prefix, mqtt_client),
+            mqtt::send_task::<MQTT_MAX_TOPIC_LEN>(mqtt_topic_prefix, mqtt_client),
             &mut tasks,
         )?;
 
         Ok((executor, tasks))
     });
-    
+
+    // This is required to allow the low prio thread to start
     std::thread::sleep(core::time::Duration::from_millis(2000));
     mid_prio_execution.join().unwrap();
     low_prio_execution.join().unwrap();
@@ -186,4 +190,3 @@ async fn wind_speed_demo_publisher_task() {
         Timer::after(Duration::from_secs(10)).await;
     }
 }
-

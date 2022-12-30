@@ -3,11 +3,10 @@ use crate::state::*;
 use log::*;
 
 pub async fn http_server_task() {
-   // use channel_bridge::asynch::*;
+    // use channel_bridge::asynch::*;
     use embedded_svc::io::blocking::Write;
     use embedded_svc::utils::http::Headers;
     use esp_idf_svc::http::server::Configuration;
-    use embassy_sync::pubsub::PubSubChannel;
 
     const FIRMWARE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
