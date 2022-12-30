@@ -89,31 +89,26 @@ pub async fn send_task<const L: usize>(topic_prefix: &str, mut mqtt: impl Client
                 connected = false;
             }
         }
-        if let Some(app_state_change) = app_state_change {
-            match app_state_change {
-                ApplicationStateChange::NewWindData(wind_data) => {
-                    info!("mqtt::send new wind data {}", wind_data.speed);
+        if let Some(ApplicationStateChange::NewWindData(wind_data)) = app_state_change {
+            info!("mqtt::send new wind data {}", wind_data.speed);
 
-                    if connected {
-                        if let Ok(_msg_id) = error::check!(
-                            mqtt.publish(
-                                &topic_wind_speed,
-                                QoS::AtLeastOnce,
-                                false,
-                                format!("{}", wind_data.speed).as_str().as_bytes()
-                            )
-                            .await
-                        ) {
-                            info!("Published to {}", topic_wind_speed);
-                        }
-                    } else {
-                        error!(
-                            "Client not connected, skipping publishment to {}",
-                            topic_wind_speed
-                        );
-                    }
+            if connected {
+                if let Ok(_msg_id) = error::check!(
+                    mqtt.publish(
+                        &topic_wind_speed,
+                        QoS::AtLeastOnce,
+                        false,
+                        format!("{}", wind_data.speed).as_str().as_bytes()
+                    )
+                    .await
+                ) {
+                    info!("Published to {}", topic_wind_speed);
                 }
-                _ => {}
+            } else {
+                error!(
+                    "Client not connected, skipping publishment to {}",
+                    topic_wind_speed
+                );
             }
         }
     }
