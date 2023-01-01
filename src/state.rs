@@ -16,9 +16,18 @@ pub static NETWORK_EVENT_CHANNEL: PubSubChannel<
 pub static APPLICATION_EVENT_CHANNEL: PubSubChannel<
     CriticalSectionRawMutex,
     ApplicationStateChange,
-    4,
-    4,
-    4,
+    5,
+    5,
+    5,
+> = PubSubChannel::new();
+
+#[allow(dead_code)]
+pub static APPLICATION_DATA_CHANNEL: PubSubChannel<
+    CriticalSectionRawMutex,
+    ApplicationDataChange,
+    5,
+    5,
+    5,
 > = PubSubChannel::new();
 
 #[derive(Copy, Clone, Debug)]
@@ -38,5 +47,10 @@ pub struct WindData {
 pub enum ApplicationStateChange {
     OTAUpdateRequest(OtaUrl),
     OTAUpdateStarted,
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub enum ApplicationDataChange {
     NewWindData(WindData),
 }

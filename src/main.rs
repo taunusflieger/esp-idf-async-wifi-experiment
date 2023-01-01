@@ -6,6 +6,7 @@ use crate::task::{httpd::*, mqtt, ota::*};
 use channel_bridge::{asynch::pubsub, asynch::*};
 use edge_executor::*;
 use edge_executor::{Local, Task};
+use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Timer};
 use embedded_svc::utils::asyncify::Asyncify;
 use embedded_svc::wifi::Wifi as WifiTrait;
@@ -17,7 +18,6 @@ use esp_idf_svc::netif::IpEvent;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::wifi::WifiEvent;
 use esp_idf_sys as _; // If using the `binstart` feature of `esp-idf-sys`, always keep this module imported
-
 use esp_idf_sys::{self as sys};
 use log::*;
 
@@ -52,8 +52,6 @@ fn main() -> Result<(), InitError> {
         Some(nvs_default_partition),
     )?;
 
-    let (mqtt_topic_prefix, mqtt_client, mqtt_conn) = services::mqtt()?;
-
     ThreadSpawnConfiguration {
         name: Some(b"mid-prio-executor\0"),
         priority: TASK_MID_PRIORITY,
@@ -65,19 +63,38 @@ fn main() -> Result<(), InitError> {
         let executor = EspExecutor::new();
         let mut tasks = heapless::Vec::new();
 
+        info!("enter mid_prio_execution");
         executor.spawn_local_collect(process_wifi_state_change(wifi, wifi_notif), &mut tasks)?;
 
         executor.spawn_local_collect(wind_speed_demo_publisher_task(), &mut tasks)?;
 
         executor.spawn_local_collect(http_server_task(), &mut tasks)?;
 
-        executor.spawn_local_collect(mqtt::receive_task(mqtt_conn), &mut tasks)?;
-
         executor.spawn_local_collect(
             process_netif_state_change(netif_notifier(sysloop.clone()).unwrap()),
             &mut tasks,
         )?;
+        info!("leave mid_prio_execution");
+        Ok((executor, tasks))
+    });
 
+    ThreadSpawnConfiguration {
+        name: Some(b"mqtt-executor\0"),
+        priority: TASK_MID_PRIORITY,
+        ..Default::default()
+    }
+    .set()?;
+
+    std::thread::sleep(core::time::Duration::from_millis(8000));
+    let (mqtt_topic_prefix, mqtt_client, mqtt_conn) = services::mqtt()?;
+
+    let mqtt_execution = schedule::<8, _>(8000, move || {
+        let executor = EspExecutor::new();
+        let mut tasks = heapless::Vec::new();
+        info!("enter mqtt_execution");
+
+        executor.spawn_local_collect(mqtt::receive_task(mqtt_conn), &mut tasks)?;
+        info!("leave mqtt_execution");
         Ok((executor, tasks))
     });
 
@@ -88,24 +105,30 @@ fn main() -> Result<(), InitError> {
     }
     .set()?;
 
-    let low_prio_execution = schedule::<8, _>(50000, move || {
+    let low_prio_execution = schedule::<8, _>(8000, move || {
         let executor = EspExecutor::new();
         let mut tasks = heapless::Vec::new();
-
+        info!("enter low_prio_execution");
         executor.spawn_local_collect(ota_task(), &mut tasks)?;
 
         executor.spawn_local_collect(
             mqtt::send_task::<MQTT_MAX_TOPIC_LEN>(mqtt_topic_prefix, mqtt_client),
             &mut tasks,
         )?;
-
+        info!("leave low_prio_execution");
         Ok((executor, tasks))
     });
 
     // This is required to allow the low prio thread to start
     std::thread::sleep(core::time::Duration::from_millis(2000));
+    info!("before mid_prio_execution");
     mid_prio_execution.join().unwrap();
+    info!("before mqtt_execution");
+    mqtt_execution.join().unwrap();
+    info!("before low_prio_execution");
     low_prio_execution.join().unwrap();
+
+    info!("all tasks running");
 
     unreachable!();
 }
@@ -182,13 +205,34 @@ pub async fn process_netif_state_change(mut state_changed_source: impl Receiver<
 }
 
 async fn wind_speed_demo_publisher_task() {
+    let publisher = APPLICATION_DATA_CHANNEL.publisher().unwrap();
+    let mut app_event = APPLICATION_EVENT_CHANNEL.subscriber().unwrap();
     loop {
-        let publisher = APPLICATION_EVENT_CHANNEL.publisher().unwrap();
-        let data = ApplicationStateChange::NewWindData(WindData {
-            speed: 23,
-            angle: 180,
-        });
-        let _ = publisher.publish(data).await;
-        Timer::after(Duration::from_secs(10)).await;
+        let (timer_fired, app_state_change) = match select(
+            Timer::after(Duration::from_secs(10)),
+            app_event.next_message_pure(),
+        )
+        .await
+        {
+            Either::First(_) => (Some(true), None),
+            Either::Second(app_state_change) => {
+                info!("send_task recv app_state_change");
+                (None, Some(app_state_change))
+            }
+        };
+        if let Some(ApplicationStateChange::OTAUpdateStarted) = app_state_change {
+            info!("wind_speed_demo_publisher_task OTA Update started shutting down wind_speed_demo_publisher task");
+            break;
+        }
+
+        if let Some(send_needed) = timer_fired {
+            if send_needed {
+                let data = ApplicationDataChange::NewWindData(WindData {
+                    speed: 23,
+                    angle: 180,
+                });
+                let _ = publisher.publish(data).await;
+            }
+        }
     }
 }
