@@ -5,7 +5,7 @@ use crate::mqtt_msg::{
 };
 use crate::state::*;
 use core::str::{self, FromStr};
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embedded_svc::mqtt::client::asynch::{Client, Connection, Event, Publish, QoS};
@@ -14,22 +14,37 @@ use log::*;
 static MQTT_CONNECT_SIGNAL: Signal<CriticalSectionRawMutex, bool> = Signal::new();
 
 pub async fn receive_task(mut connection: impl Connection<Message = Option<MqttCommand>>) {
+    let mut app_event = APPLICATION_EVENT_CHANNEL.subscriber().unwrap();
+
     loop {
-        let message = connection.next().await;
+        let (message, app_state_change) =
+            match select(connection.next(), app_event.next_message_pure()).await {
+                Either::First(message) => {
+                    info!("send_task recv MQTT_CONNECT_SIGNAL");
+                    (message, None)
+                }
+                Either::Second(app_state_change) => {
+                    info!("send_task recv app_state_change");
+                    (None, Some(app_state_change))
+                }
+            };
 
         if let Some(message) = message {
-            info!("[MQTT/CONNECTION]: {:?}", message);
+            info!("receive_task [MQTT/CONNECTION]: {:?}", message);
 
             if let Ok(Event::Received(Some(cmd))) = &message {
                 match cmd {
                     MqttCommand::ExecOTAUpdate(url) => {
-                        info!("MQTT received OTA update request. url = {}", url);
+                        info!(
+                            "receive_task MQTT received OTA update request. url = {}",
+                            url
+                        );
                         let publisher = APPLICATION_EVENT_CHANNEL.publisher().unwrap();
                         let data = ApplicationStateChange::OTAUpdateRequest(url.clone());
                         let _ = publisher.publish(data).await;
                     }
                     MqttCommand::SystemRestart => {
-                        info!("MQTT received system restart request");
+                        info!("receive_task MQTT received system restart request");
                     }
                 }
             } else if matches!(&message, Ok(Event::Connected(_))) {
@@ -37,8 +52,12 @@ pub async fn receive_task(mut connection: impl Connection<Message = Option<MqttC
             } else if matches!(&message, Ok(Event::Disconnected)) {
                 MQTT_CONNECT_SIGNAL.signal(false);
             }
-        } else {
-            info!("mqtt::recveive exit loop");
+        }
+
+        if let Some(ApplicationStateChange::OTAUpdateStarted) = app_state_change {
+            info!("receive_task OTA Update started shutting down mqtt receive_task");
+            // No clean-up of the mqtt object here as this has been done in
+            // send_task
             break;
         }
     }
@@ -65,23 +84,33 @@ pub async fn send_task<const L: usize>(topic_prefix: &str, mut mqtt: impl Client
     let topic_wind_angle = topic(MQTT_TOPIC_POSTFIX_WIND_DIRECTION);
 
     let mut app_event = APPLICATION_EVENT_CHANNEL.subscriber().unwrap();
+    let mut app_data = APPLICATION_DATA_CHANNEL.subscriber().unwrap();
 
     loop {
-        let (conn_state, app_state_change) =
-            match select(MQTT_CONNECT_SIGNAL.wait(), app_event.next_message_pure()).await {
-                Either::First(conn_state) => {
-                    info!("MQTT::send recv MQTT_CONNECT_SIGNAL");
-                    (Some(conn_state), None)
-                }
-                Either::Second(app_state_change) => {
-                    info!("MQTT::send recv app_state_change");
-                    (None, Some(app_state_change))
-                }
-            };
+        let (conn_state, app_state_change, app_data) = match select3(
+            MQTT_CONNECT_SIGNAL.wait(),
+            app_event.next_message_pure(),
+            app_data.next_message_pure(),
+        )
+        .await
+        {
+            Either3::First(conn_state) => {
+                info!("send_task recv MQTT_CONNECT_SIGNAL");
+                (Some(conn_state), None, None)
+            }
+            Either3::Second(app_state_change) => {
+                info!("send_task recv app_state_change");
+                (None, Some(app_state_change), None)
+            }
+            Either3::Third(app_data) => {
+                info!("send_task recv app_state_change");
+                (None, None, Some(app_data))
+            }
+        };
 
-        if let Some(conn_state) = conn_state {
-            if conn_state {
-                info!("MQTT is now connected, subscribing");
+        if let Some(new_conn_state) = conn_state {
+            if new_conn_state {
+                info!("send_task MQTT is now connected, subscribing");
 
                 mqtt.subscribe(topic_commands.as_str(), QoS::AtLeastOnce)
                     .await
@@ -89,14 +118,19 @@ pub async fn send_task<const L: usize>(topic_prefix: &str, mut mqtt: impl Client
 
                 connected = true;
             } else {
-                info!("MQTT disconnected");
+                info!("send_task MQTT disconnected");
 
                 connected = false;
             }
         }
 
-        if let Some(ApplicationStateChange::NewWindData(wind_data)) = app_state_change {
-            info!("mqtt::send new wind data {}", wind_data.speed);
+        if let Some(ApplicationStateChange::OTAUpdateStarted) = app_state_change {
+            info!("send_task OTA Update started shutting down mqtt send_task");
+            drop(mqtt);
+            break;
+        }
+        if let Some(ApplicationDataChange::NewWindData(wind_data)) = app_data {
+            info!("send_task send new wind data {}", wind_data.speed);
 
             if connected {
                 if let Ok(_msg_id) = error::check!(
@@ -108,11 +142,11 @@ pub async fn send_task<const L: usize>(topic_prefix: &str, mut mqtt: impl Client
                     )
                     .await
                 ) {
-                    info!("Published to {}", topic_wind_speed);
+                    info!("send_task published to {}", topic_wind_speed);
                 }
             } else {
-                error!(
-                    "Client not connected, skipping publishment to {}",
+                info!(
+                    "send_task client not connected, skipping publishment to {}",
                     topic_wind_speed
                 );
             }
