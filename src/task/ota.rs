@@ -37,7 +37,8 @@ pub async fn ota_task() {
             let data = ApplicationStateChange::OTAUpdateStarted;
             publisher.publish(data).await;
             Timer::after(Duration::from_secs(2)).await;
-            perform_update("http://192.168.100.86/bin/firmware-0.1.0.bin");
+
+            perform_update(url.as_str());
         }
     }
 }
