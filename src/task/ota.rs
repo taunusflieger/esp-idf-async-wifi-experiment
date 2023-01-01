@@ -76,7 +76,7 @@ fn perform_update(firmware_url: &str) {
 
     info!("Content-length: {:?}", content_length);
 
-    info!(">>>>>>>>>>>>>>>> initiating OTA update");
+    info!("initiating OTA update");
 
     let update_partition: esp_partition_t =
         unsafe { *esp_ota_get_next_update_partition(ptr::null()) };
@@ -214,6 +214,7 @@ fn perform_update(firmware_url: &str) {
     }
 }
 
+// TODO: remove this once the issue in eps-idf-scv regarding FirmwareInfo is fixed (PR submitted)
 fn get_firmware_info_from_download(data: &[u8]) -> Result<FirmwareInfo, InitError> {
     let offset =
         mem::size_of::<esp_image_header_t>() + mem::size_of::<esp_image_segment_header_t>();
