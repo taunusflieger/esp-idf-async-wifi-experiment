@@ -10,7 +10,9 @@ CONFIG_LWIP_MAX_SOCKETS=16
 # Enable the option to dispatch timer events directly from the timer ISR 
 # (the executor & async timer wrapper of `esp-idf-svc` are compatible with this dispatch method)
 # This has lower latency as compared to dispatching via an intermediate task
-CONFIG_ESP_TIMER_SUPPORTS_ISR_DISPATCH_METHOD=y
+# SAFETY: currently there is a bug in esp-idf which results in a crash in
+# long running tasks - so this needs to be disabled
+CONFIG_ESP_TIMER_SUPPORTS_ISR_DISPATCH_METHOD=n
 
 # Enable posting to event loops directly from an ISR 
 # (the event loop wrapper of `esp-idf-svc` is compatible with this, including the async postbox wrapper)

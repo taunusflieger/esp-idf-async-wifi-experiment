@@ -124,7 +124,7 @@ fn perform_update(firmware_url: &str) {
     let mut image_header_was_checked = false;
 
     loop {
-        esp_idf_hal::delay::FreeRtos::delay_ms(50);
+        //esp_idf_hal::delay::FreeRtos::delay_ms(20);
         let data_read = match client.read(&mut ota_write_data) {
             Ok(n) => n,
             Err(err) => {
