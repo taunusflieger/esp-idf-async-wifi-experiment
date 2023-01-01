@@ -4,8 +4,10 @@ use crate::state::*;
 use core::mem;
 use core::ptr;
 use embassy_time::{Duration, Timer};
+use embedded_svc::ota::FirmwareInfoLoader;
+use embedded_svc::ota::LoadResult;
 use esp_idf_svc::http::client::{Configuration, EspHttpConnection};
-use esp_idf_svc::ota::EspOta;
+use esp_idf_svc::ota::{EspFirmwareInfoLoader, EspOta};
 use esp_idf_sys::*;
 use heapless::String;
 use log::*;
@@ -33,7 +35,7 @@ pub async fn ota_task() {
             // Notify all tasks that the OTA update started. These tasks are
             // expected to shutdown
             let data = ApplicationStateChange::OTAUpdateStarted;
-            let _ = publisher.publish(data).await;
+            publisher.publish(data).await;
             Timer::after(Duration::from_secs(2)).await;
             perform_update("http://192.168.100.86/bin/firmware-0.1.0.bin");
         }
@@ -98,12 +100,8 @@ fn perform_update(firmware_url: &str) {
     let update_slot = ota.get_update_slot().unwrap();
     info!("update slot = {:?}", update_slot);
 
-    let invalid_slot = ota.get_last_invalid_slot().unwrap();
-    if invalid_slot.is_none() {
-        info!("no invalid slot found");
-    } else {
-        info!("last invalid slot = {:?}", invalid_slot);
-        let slot = invalid_slot.unwrap();
+    if let Some(slot) = ota.get_last_invalid_slot().unwrap() {
+        info!("last invalid slot = {:?}", slot);
         if slot.firmware.is_some() {
             let fw = slot.firmware.unwrap();
             if let Err(err) = invalid_fw_version.push_str(fw.version.as_str()) {
@@ -111,7 +109,10 @@ fn perform_update(firmware_url: &str) {
             }
             found_invalid_fw = true;
         }
+    } else {
+        info!("no invalid slot found");
     }
+
     info!("initiating ota update...");
     let ota_update = ota
         .initiate_update()
@@ -122,7 +123,7 @@ fn perform_update(firmware_url: &str) {
     let mut image_header_was_checked = false;
 
     loop {
-        esp_idf_hal::delay::FreeRtos::delay_ms(20);
+        esp_idf_hal::delay::FreeRtos::delay_ms(50);
         let data_read = match client.read(&mut ota_write_data) {
             Ok(n) => n,
             Err(err) => {
@@ -141,12 +142,25 @@ fn perform_update(firmware_url: &str) {
             let download_fw_info = get_firmware_info_from_download(&ota_write_data).unwrap();
             info!("Firmware info = {:?}", download_fw_info);
 
-            if found_invalid_fw {
-                if invalid_fw_version == download_fw_info.version {
-                    info!("New FW has same version as invalide firmware slot. Stopping update");
-                    break;
+            let mut esp_fw_loader_info = EspFirmwareInfoLoader::new();
+            let res = match esp_fw_loader_info.load(&ota_write_data) {
+                Ok(load_result) => load_result,
+                Err(err) => {
+                    panic!("retriving FW info for downloaded FW: {err:?}")
                 }
+            };
+            if res != LoadResult::Loaded {
+                panic!("incomplete data for retriving FW info for downloaded FW");
             }
+
+            let fw_info = esp_fw_loader_info.get_info().unwrap();
+            info!("Firmware info = {:?}", fw_info);
+
+            if found_invalid_fw && invalid_fw_version == download_fw_info.version {
+                info!("New FW has same version as invalide firmware slot. Stopping update");
+                break;
+            }
+
             image_header_was_checked = true;
         }
 
@@ -154,7 +168,9 @@ fn perform_update(firmware_url: &str) {
 
         if !ota_write_data.is_empty() {
             match ota_update.write(&ota_write_data) {
-                Ok(_) => {}
+                Ok(_) => {
+                    //   info!("write buffer");
+                }
                 Err(err) => {
                     error!("ERROR failed to write update with: {:?}", err);
                     break;
@@ -176,6 +192,7 @@ fn perform_update(firmware_url: &str) {
 
     if firmware_update_ok {
         info!("Trying to set update to complete");
+
         match ota_update.complete() {
             Ok(_) => {
                 info!("OTA completed firmware update");

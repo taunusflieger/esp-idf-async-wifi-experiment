@@ -41,10 +41,13 @@ pub async fn receive_task(mut connection: impl Connection<Message = Option<MqttC
                         );
                         let publisher = APPLICATION_EVENT_CHANNEL.publisher().unwrap();
                         let data = ApplicationStateChange::OTAUpdateRequest(url.clone());
-                        let _ = publisher.publish(data).await;
+                        publisher.publish(data).await;
                     }
                     MqttCommand::SystemRestart => {
                         info!("receive_task MQTT received system restart request");
+                        unsafe {
+                            esp_idf_sys::esp_restart();
+                        }
                     }
                 }
             } else if matches!(&message, Ok(Event::Connected(_))) {

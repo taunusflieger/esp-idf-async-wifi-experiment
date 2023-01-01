@@ -18,6 +18,7 @@ use esp_idf_svc::netif::IpEvent;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::wifi::WifiEvent;
 use esp_idf_sys as _; // If using the `binstart` feature of `esp-idf-sys`, always keep this module imported
+use esp_idf_sys::esp_ota_mark_app_valid_cancel_rollback;
 use esp_idf_sys::{self as sys};
 use log::*;
 
@@ -59,7 +60,7 @@ fn main() -> Result<(), InitError> {
     }
     .set()?;
 
-    let mid_prio_execution = schedule::<8, _>(50000, move || {
+    let mid_prio_execution = schedule::<8, _>(30000, move || {
         let executor = EspExecutor::new();
         let mut tasks = heapless::Vec::new();
 
@@ -68,6 +69,7 @@ fn main() -> Result<(), InitError> {
 
         executor.spawn_local_collect(wind_speed_demo_publisher_task(), &mut tasks)?;
 
+        executor.spawn_local_collect(ota_task(), &mut tasks)?;
         executor.spawn_local_collect(http_server_task(), &mut tasks)?;
 
         executor.spawn_local_collect(
@@ -109,7 +111,6 @@ fn main() -> Result<(), InitError> {
         let executor = EspExecutor::new();
         let mut tasks = heapless::Vec::new();
         info!("enter low_prio_execution");
-        executor.spawn_local_collect(ota_task(), &mut tasks)?;
 
         executor.spawn_local_collect(
             mqtt::send_task::<MQTT_MAX_TOPIC_LEN>(mqtt_topic_prefix, mqtt_client),
@@ -190,6 +191,11 @@ pub async fn process_netif_state_change(mut state_changed_source: impl Receiver<
         match event {
             IpEvent::DhcpIpAssigned(assignment) => {
                 info!("IpEvent: DhcpIpAssigned: {:?}", assignment.ip_settings.ip);
+
+                // if an IP address has been succesfully assiggned we consider
+                // the application working, no rollback required.
+                unsafe { esp_ota_mark_app_valid_cancel_rollback() };
+
                 let mut publisher = NETWORK_EVENT_CHANNEL.publisher().unwrap();
                 let _ = publisher
                     .send(NetworkStateChange::IpAddressAssigned {
@@ -231,7 +237,7 @@ async fn wind_speed_demo_publisher_task() {
                     speed: 23,
                     angle: 180,
                 });
-                let _ = publisher.publish(data).await;
+                publisher.publish(data).await;
             }
         }
     }

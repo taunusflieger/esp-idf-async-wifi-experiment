@@ -55,3 +55,6 @@ partition_table = "partitions.csv"
 
 [build-dependencies]
 embuild = "0.30.4"
+
+[patch.crates-io]
+#embedded-svc = { path = "../embedded-svc" }

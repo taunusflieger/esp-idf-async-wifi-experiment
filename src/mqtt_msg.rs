@@ -85,7 +85,7 @@ impl MessageParser {
         }
     }
 
-    //#[allow(clippy::type_complexity)]
+    #[allow(clippy::type_complexity)]
     fn parse_command(topic: &str) -> Option<fn(&[u8]) -> Option<MqttCommand>> {
         info!("parse_command: {}", topic);
         if topic.ends_with(MQTT_TOPIC_POSTFIX_COMMAND_OTA_UPDATE) {
