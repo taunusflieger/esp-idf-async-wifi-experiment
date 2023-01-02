@@ -4,8 +4,7 @@ use crate::state::*;
 use core::mem;
 use core::ptr;
 use embassy_time::{Duration, Timer};
-use embedded_svc::ota::FirmwareInfoLoader;
-use embedded_svc::ota::LoadResult;
+use embedded_svc::ota::{FirmwareInfo, FirmwareInfoLoader, LoadResult, Slot};
 use esp_idf_svc::http::client::{Configuration, EspHttpConnection};
 use esp_idf_svc::ota::{EspFirmwareInfoLoader, EspOta};
 use esp_idf_sys::*;
@@ -13,14 +12,6 @@ use heapless::String;
 use log::*;
 
 const WRITE_DATA_BUF_SIZE: usize = 1024;
-
-#[derive(Clone, Debug)]
-pub struct FirmwareInfo {
-    pub version: heapless::String<32>,
-    pub date: heapless::String<16>,
-    pub time: heapless::String<16>,
-    pub description: heapless::String<128>,
-}
 
 pub async fn ota_task() {
     let mut subscriber = APPLICATION_EVENT_CHANNEL.subscriber().unwrap();
@@ -59,6 +50,7 @@ fn perform_update(firmware_url: &str) -> Result<(), OtaError> {
     let mut ota_write_data: [u8; WRITE_DATA_BUF_SIZE] = [0; WRITE_DATA_BUF_SIZE];
     let mut invalid_fw_version: heapless::String<32> = String::new();
     let mut found_invalid_fw = false;
+    let mut update_summary: heapless::String<410> = String::new();
 
     let mut client = EspHttpConnection::new(&Configuration {
         buffer_size: Some(WRITE_DATA_BUF_SIZE),
@@ -109,13 +101,8 @@ fn perform_update(firmware_url: &str) -> Result<(), OtaError> {
     let mut ota = EspOta::new().expect("EspOta::new should have been successfull");
 
     let boot_slot = ota.get_boot_slot().unwrap();
-    info!("boot slot = {:?}", boot_slot);
-
     let run_slot = ota.get_running_slot().unwrap();
-    info!("run slot = {:?}", run_slot);
-
     let update_slot = ota.get_update_slot().unwrap();
-    info!("update slot = {:?}", update_slot);
 
     if let Some(slot) = ota.get_last_invalid_slot().unwrap() {
         info!("last invalid slot = {:?}", slot);
@@ -154,9 +141,6 @@ fn perform_update(firmware_url: &str) -> Result<(), OtaError> {
                     + mem::size_of::<esp_image_segment_header_t>()
                     + mem::size_of::<esp_app_desc_t>()
         {
-            let download_fw_info = get_firmware_info_from_download(&ota_write_data).unwrap();
-            info!("Firmware info = {:?}", download_fw_info);
-
             let mut esp_fw_loader_info = EspFirmwareInfoLoader::new();
             let res = match esp_fw_loader_info.load(&ota_write_data) {
                 Ok(load_result) => load_result,
@@ -171,9 +155,17 @@ fn perform_update(firmware_url: &str) -> Result<(), OtaError> {
             }
 
             let fw_info = esp_fw_loader_info.get_info().unwrap();
-            info!("Firmware info = {:?}", fw_info);
 
-            if found_invalid_fw && invalid_fw_version == download_fw_info.version {
+            format_update_summary(
+                &mut update_summary,
+                boot_slot.clone(),
+                run_slot.clone(),
+                update_slot.clone(),
+                fw_info.clone(),
+            );
+            info!("\n{update_summary}\n");
+
+            if found_invalid_fw && invalid_fw_version == fw_info.version {
                 info!("New FW has same version as invalide firmware slot. Stopping update");
                 return Err(OtaError::FwSameAsInvalidFw);
             }
@@ -211,35 +203,72 @@ fn perform_update(firmware_url: &str) -> Result<(), OtaError> {
     Ok(())
 }
 
-// TODO: remove this once the issue in eps-idf-scv regarding FirmwareInfo is fixed (PR submitted)
-fn get_firmware_info_from_download(data: &[u8]) -> Result<FirmwareInfo, InitError> {
-    let offset =
-        mem::size_of::<esp_image_header_t>() + mem::size_of::<esp_image_segment_header_t>();
-    let (_head, body, _tail) = unsafe { &data[offset..].align_to::<esp_app_desc_t>() };
+fn format_update_summary<const N: usize>(
+    update_summary: &mut heapless::String<N>,
+    boot_slot: Slot,
+    run_slot: Slot,
+    update_slot: Slot,
+    ota_image_info: FirmwareInfo,
+) {
+    let mut label: heapless::String<10> = heapless::String::new();
 
-    let app_desc: &esp_app_desc_t = &body[0];
+    update_summary.push_str("OTA Update Summary\n").unwrap();
+    update_summary.push_str("==================\n").unwrap();
+    update_summary.push_str("Boot   partition: ").unwrap();
+    copy_truncated_string(&mut label, boot_slot.label);
+    update_summary.push_str(label.as_str()).unwrap();
+    update_summary.push_str(", ").unwrap();
+    add_firmware_info(update_summary, boot_slot.firmware);
 
-    let version = std::str::from_utf8(unsafe { std::mem::transmute(&app_desc.version as &[i8]) })
-        .unwrap()
-        .trim_matches(char::from(0));
+    update_summary.push_str("\nRun    partition: ").unwrap();
+    label = heapless::String::new();
+    copy_truncated_string(&mut label, run_slot.label);
+    update_summary.push_str(label.as_str()).unwrap();
+    update_summary.push_str(", ").unwrap();
+    add_firmware_info(update_summary, run_slot.firmware);
 
-    let project_name =
-        std::str::from_utf8(unsafe { std::mem::transmute(&app_desc.project_name as &[i8]) })
-            .unwrap()
-            .trim_matches(char::from(0));
+    update_summary.push_str("\nUpdate partition: ").unwrap();
+    label = heapless::String::new();
+    copy_truncated_string(&mut label, update_slot.label);
+    update_summary.push_str(label.as_str()).unwrap();
+    update_summary.push_str(", ").unwrap();
+    add_firmware_info(update_summary, update_slot.firmware);
+    update_summary.push_str("\n").unwrap();
 
-    let date = std::str::from_utf8(unsafe { std::mem::transmute(&app_desc.date as &[i8]) })
-        .unwrap()
-        .trim_matches(char::from(0));
+    update_summary.push_str("\nDownloaded FW  : ").unwrap();
+    add_firmware_info(update_summary, Some(ota_image_info));
+    update_summary.push_str("\n").unwrap();
+}
 
-    let time = std::str::from_utf8(unsafe { std::mem::transmute(&app_desc.time as &[i8]) })
-        .unwrap()
-        .trim_matches(char::from(0));
+fn add_firmware_info<const N: usize>(
+    update_summary: &mut heapless::String<N>,
+    firmware: Option<FirmwareInfo>,
+) {
+    let mut version: heapless::String<10> = heapless::String::new();
+    let mut released: heapless::String<19> = heapless::String::new();
+    let mut description: heapless::String<32> = heapless::String::new();
 
-    Ok(FirmwareInfo {
-        version: String::from(version),
-        date: String::from(date),
-        time: String::from(time),
-        description: String::from(project_name),
-    })
+    if let Some(fw) = firmware {
+        copy_truncated_string(&mut version, fw.version);
+        update_summary.push_str(version.as_str()).unwrap();
+        update_summary.push_str(", ").unwrap();
+        copy_truncated_string(&mut released, fw.released);
+        update_summary.push_str(released.as_str()).unwrap();
+        if let Some(desc) = fw.description {
+            update_summary.push_str(", ").unwrap();
+            copy_truncated_string(&mut description, desc);
+            update_summary.push_str(description.as_str()).unwrap();
+        }
+    }
+}
+
+fn copy_truncated_string<const N: usize, const M: usize>(
+    dest: &mut heapless::String<N>,
+    src: heapless::String<M>,
+) {
+    src.as_str()
+        .chars()
+        .enumerate()
+        .take_while(|c| c.0 < N)
+        .for_each(|c| dest.push(c.1).unwrap());
 }
