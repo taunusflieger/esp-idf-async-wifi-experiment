@@ -12,7 +12,7 @@ use esp_idf_sys::*;
 use heapless::String;
 use log::*;
 
-const BUF_MAX: usize = 1024;
+const WRITE_DATA_BUF_SIZE: usize = 1024;
 
 #[derive(Clone, Debug)]
 pub struct FirmwareInfo {
@@ -38,23 +38,30 @@ pub async fn ota_task() {
             publisher.publish(data).await;
             Timer::after(Duration::from_secs(2)).await;
 
-            perform_update(url.as_str());
+            if let Err(err) = perform_update(url.as_str()) {
+                error!("Firmware update failed: {err}");
+            } else {
+                info!("Firmware update successful. Restarting device.");
+            }
+
+            esp_idf_hal::delay::FreeRtos::delay_ms(5000);
+            unsafe {
+                esp_idf_sys::esp_restart();
+            }
         }
     }
 }
 
 // TODO: as of Dec 2022 there is no async http client implementation for ESP IDF.
 // once an async implementation becomes available rework this code to become async
-fn perform_update(firmware_url: &str) {
-    info!("perform_update enter");
-    let mut content_length: usize = 0;
-    let mut ota_write_data: [u8; BUF_MAX] = [0; BUF_MAX];
-    let mut firmware_update_ok = false;
+fn perform_update(firmware_url: &str) -> Result<(), OtaError> {
+    let content_length;
+    let mut ota_write_data: [u8; WRITE_DATA_BUF_SIZE] = [0; WRITE_DATA_BUF_SIZE];
     let mut invalid_fw_version: heapless::String<32> = String::new();
     let mut found_invalid_fw = false;
 
     let mut client = EspHttpConnection::new(&Configuration {
-        buffer_size: Some(BUF_MAX),
+        buffer_size: Some(WRITE_DATA_BUF_SIZE),
         ..Default::default()
     })
     .expect("creation of EspHttpConnection should have worked");
@@ -62,17 +69,26 @@ fn perform_update(firmware_url: &str) {
     info!("EspHttpConnection created");
     let _resp = client.initiate_request(embedded_svc::http::Method::Get, firmware_url, &[]);
 
-    info!("after client.initiate_request()");
-
     if let Err(err) = client.initiate_response() {
         error!("Error initiate response {}", err);
-        return;
+        return Err(OtaError::HttpError);
+    }
+
+    let http_status = client.status();
+    if http_status != 200 {
+        error!("download fw image failed. Server response = {http_status}");
+        return Err(OtaError::FwImageNotFound);
     }
 
     if let Some(len) = client.header("Content-Length") {
         content_length = len.parse().unwrap();
     } else {
         error!("reading content length for firmware update http request failed");
+        return Err(OtaError::FwImageNotFound);
+    }
+    if content_length < WRITE_DATA_BUF_SIZE {
+        error!("Error content-length too short. Length = {content_length}");
+        return Err(OtaError::FwImageNotFound);
     }
 
     info!("Content-length: {:?}", content_length);
@@ -114,26 +130,24 @@ fn perform_update(firmware_url: &str) {
         info!("no invalid slot found");
     }
 
-    info!("initiating ota update...");
-    let ota_update = ota
-        .initiate_update()
-        .expect("initiate ota update should have worked");
-    info!("...ota update started");
+    let ota_update = match ota.initiate_update() {
+        Ok(handle) => handle,
+        Err(_) => return Err(OtaError::OtaApiError),
+    };
 
     let mut bytes_read_total = 0;
     let mut image_header_was_checked = false;
 
     loop {
-        //esp_idf_hal::delay::FreeRtos::delay_ms(20);
         let data_read = match client.read(&mut ota_write_data) {
             Ok(n) => n,
             Err(err) => {
                 error!("ERROR reading firmware batch {:?}", err);
-                break;
+                return Err(OtaError::HttpError);
             }
         };
-        //info!("Bytes read: {}", data_read);
 
+        // Check if first segment and process image meta data
         if !image_header_was_checked
             && data_read
                 > mem::size_of::<esp_image_header_t>()
@@ -147,11 +161,13 @@ fn perform_update(firmware_url: &str) {
             let res = match esp_fw_loader_info.load(&ota_write_data) {
                 Ok(load_result) => load_result,
                 Err(err) => {
-                    panic!("retriving FW info for downloaded FW: {err:?}")
+                    error!("failed to retrive firmware info from download: {err}");
+                    return Err(OtaError::OtaApiError);
                 }
             };
             if res != LoadResult::Loaded {
-                panic!("incomplete data for retriving FW info for downloaded FW");
+                error!("incomplete data for retriving FW info for downloaded FW");
+                return Err(OtaError::OtaApiError);
             }
 
             let fw_info = esp_fw_loader_info.get_info().unwrap();
@@ -159,7 +175,7 @@ fn perform_update(firmware_url: &str) {
 
             if found_invalid_fw && invalid_fw_version == download_fw_info.version {
                 info!("New FW has same version as invalide firmware slot. Stopping update");
-                break;
+                return Err(OtaError::FwSameAsInvalidFw);
             }
 
             image_header_was_checked = true;
@@ -167,52 +183,32 @@ fn perform_update(firmware_url: &str) {
 
         bytes_read_total += data_read;
 
-        if !ota_write_data.is_empty() {
-            match ota_update.write(&ota_write_data) {
-                Ok(_) => {
-                    //   info!("write buffer");
-                }
-                Err(err) => {
-                    error!("ERROR failed to write update with: {:?}", err);
-                    break;
-                }
+        if data_read > 0 {
+            if let Err(err) = ota_update.write(&ota_write_data) {
+                error!("ERROR failed to write update with: {err:?}");
+                return Err(OtaError::FlashFailed);
             }
-        } else {
-            error!("ERROR firmware image with zero length");
-            break;
         }
 
+        // Check if we have read an entire buffer. If not,
+        // we assume it was the last segment and we stop
         if ota_write_data.len() > data_read {
             break;
         }
     }
 
     if bytes_read_total == content_length {
-        firmware_update_ok = true;
-    }
-
-    if firmware_update_ok {
-        info!("Trying to set update to complete");
-
-        match ota_update.complete() {
-            Ok(_) => {
-                info!("OTA completed firmware update");
-            }
-            Err(err) => {
-                error!("OTA update failed. esp_ota_end failed {:?}", err);
-            }
+        if let Err(err) = ota_update.complete() {
+            error!("OTA update failed. esp_ota_end failed {:?}", err);
+            return Err(OtaError::OtaApiError);
         }
     } else {
         ota_update.abort().unwrap();
         error!("ERROR firmware update failed");
+        return Err(OtaError::ImageLoadIncomplete);
     };
 
-    esp_idf_hal::delay::FreeRtos::delay_ms(1000);
-    info!("restarting device after firmware update");
-
-    unsafe {
-        esp_idf_sys::esp_restart();
-    }
+    Ok(())
 }
 
 // TODO: remove this once the issue in eps-idf-scv regarding FirmwareInfo is fixed (PR submitted)
